@@ -549,7 +549,19 @@ static unsigned int __resolve_freq(struct cpufreq_policy *policy,
 	policy->cached_target_freq = target_freq;
 	return policy->freq_table[idx].frequency;
 }
+unsigned int get_current_frequency(struct cpufreq_policy * policy)
+{
+         unsigned int cur_freq = __cpufreq_get(policy);
+         return cur_freq;
+}
+EXPORT_SYMBOL_GPL(get_current_frequency);
 
+unsigned int get_min_freq(struct cpufreq_policy * policy)
+{
+         unsigned int final_freq_min = __resolve_freq(policy, 0, CPUFREQ_RELATION_L);
+         return final_freq_min;
+}
+EXPORT_SYMBOL_GPL(get_min_freq);
 /**
  * cpufreq_driver_resolve_freq - Map a target frequency to a driver-supported
  * one.
@@ -2607,6 +2619,9 @@ static int cpufreq_set_policy(struct cpufreq_policy *policy,
 	policy->min = __resolve_freq(policy, policy->min, CPUFREQ_RELATION_L);
 	policy->max = __resolve_freq(policy, policy->max, CPUFREQ_RELATION_H);
 	trace_cpu_frequency_limits(policy);
+
+	arch_set_min_freq_scale(policy->related_cpus, policy->min,
+				policy->cpuinfo.max_freq);
 
 	policy->cached_target_freq = UINT_MAX;
 
