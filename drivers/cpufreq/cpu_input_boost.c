@@ -18,12 +18,7 @@
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
 #include <uapi/linux/sched/types.h>
 #endif
-static cpumask_t _lp_mask;
-static cpumask_t _perf_mask;
-static cpumask_t _prime_mask;
-#define cpu_lp_mask (&_lp_mask)
-#define cpu_perf_mask (&_perf_mask)
-#define cpu_prime_mask (&_prime_mask)
+
 static unsigned int input_boost_freq_little __read_mostly =
 	CONFIG_INPUT_BOOST_FREQ_LP;
 static unsigned int input_boost_freq_big __read_mostly =
@@ -98,12 +93,12 @@ static unsigned int get_input_boost_freq(struct cpufreq_policy *policy)
 {
 	unsigned int freq;
 
-	if (cpumask_test_cpu(policy->cpu, cpu_lp_mask))
-		freq = input_boost_freq_little;
-	else if (cpumask_test_cpu(policy->cpu, cpu_perf_mask))
-		freq = input_boost_freq_big;
+	if (policy->cpu <= 1)
+		freq = max(input_boost_freq_little, cpu_freq_min_little);
+	else if (policy->cpu <= 6)
+		freq = max(input_boost_freq_big, cpu_freq_min_big);
 	else
-		freq = input_boost_freq_prime;
+		freq = max(input_boost_freq_prime, cpu_freq_min_prime);
 	return min(freq, policy->max);
 }
 
@@ -111,12 +106,12 @@ static unsigned int get_max_boost_freq(struct cpufreq_policy *policy)
 {
 	unsigned int freq;
 
-	if (cpumask_test_cpu(policy->cpu, cpu_lp_mask))
-		freq = max_boost_freq_little;
-	else if (cpumask_test_cpu(policy->cpu, cpu_perf_mask))
-		freq = max_boost_freq_big;
+	if (policy->cpu <= 1)
+		freq = max(max_boost_freq_little, cpu_freq_min_little);
+	else if (policy->cpu <= 6)
+		freq = max(max_boost_freq_big, cpu_freq_min_big);
 	else
-		freq = max_boost_freq_prime;
+		freq = max(max_boost_freq_prime, cpu_freq_min_prime);
 	return min(freq, policy->max);
 }
 
@@ -124,9 +119,9 @@ static unsigned int get_min_freq_p(struct cpufreq_policy *policy)
 {
 	unsigned int freq;
 
-	if (cpumask_test_cpu(policy->cpu, cpu_lp_mask))
+	if (policy->cpu <= 1)
 		freq = cpu_freq_min_little;
-	else if (cpumask_test_cpu(policy->cpu, cpu_perf_mask))
+	else if (policy->cpu <= 6)
 		freq = cpu_freq_min_big;
 	else
 		freq = cpu_freq_min_prime;
@@ -138,9 +133,9 @@ static unsigned int get_idle_freq(struct cpufreq_policy *policy)
 {
 	unsigned int freq;
 
-	if (cpumask_test_cpu(policy->cpu, cpu_lp_mask))
+	if (policy->cpu <= 1)
 		freq = cpu_freq_idle_little;
-	else if (cpumask_test_cpu(policy->cpu, cpu_perf_mask))
+	else if (policy->cpu <= 6)
 		freq = cpu_freq_idle_big;
 	else
 		freq = cpu_freq_idle_prime;
@@ -178,32 +173,23 @@ static void boost_adjust_notify(struct cpufreq_policy *policy)
 
 static void update_online_cpu_policy(void)
 {
-	unsigned int cpu;
-        struct cpufreq_policy *policy;
+	static const unsigned int cluster_cpus[] = { 0, 2, 5, 7 };
+	struct cpufreq_policy *policy;
+	unsigned int i, cpu;
+
 	cpus_read_lock();
-	/*cpu = cpumask_first_and(cpu_lp_mask, cpu_online_mask);
-	cpufreq_update_policy(cpu);
-	cpu = cpumask_first_and(cpu_perf_mask, cpu_online_mask);
-	cpufreq_update_policy(cpu);
-	cpu = cpumask_first_and(cpu_perfp_mask, cpu_online_mask);*/
-	for_each_possible_cpu(cpu) {
-		if (cpu_online(cpu)) {
-			if (cpumask_intersects(cpumask_of(cpu), cpu_lp_mask)) {
-				cpufreq_update_policy(cpu);
-                                policy = cpufreq_cpu_get(cpu);
-                                boost_adjust_notify(policy);
-                        }
-			if (cpumask_intersects(cpumask_of(cpu), cpu_perf_mask)) {
-				cpufreq_update_policy(cpu);
-                                policy = cpufreq_cpu_get(cpu);
-                                boost_adjust_notify(policy);
-			}
-                        if (cpumask_intersects(cpumask_of(cpu), cpu_prime_mask)) {
-				cpufreq_update_policy(cpu);
-                                policy = cpufreq_cpu_get(cpu);
-                                boost_adjust_notify(policy);
-                        }
-		}
+	for (i = 0; i < ARRAY_SIZE(cluster_cpus); i++) {
+		cpu = cluster_cpus[i];
+		if (!cpu_online(cpu))
+			continue;
+
+		cpufreq_update_policy(cpu);
+		policy = cpufreq_cpu_get(cpu);
+		if (!policy)
+			continue;
+
+		boost_adjust_notify(policy);
+		cpufreq_cpu_put(policy);
 	}
 	cpus_read_unlock();
 }
@@ -414,10 +400,6 @@ static int __init cpu_input_boost_init(void)
 	struct task_struct *thread;
 	int ret;
 
-	_lp_mask.bits[0] = 15;
-	_perf_mask.bits[0] = 112;
-	_prime_mask.bits[0] = 128;
-
 	cpu_input_boost_input_handler.private = b;
 	ret = input_register_handler(&cpu_input_boost_input_handler);
 	if (ret) {
@@ -448,3 +430,4 @@ unregister_handler:
 	return ret;
 }
 late_initcall(cpu_input_boost_init);
+
