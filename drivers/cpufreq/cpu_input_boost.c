@@ -89,16 +89,48 @@ static struct boost_drv boost_drv_g __read_mostly = {
 	.boost_waitq = __WAIT_QUEUE_HEAD_INITIALIZER(boost_drv_g.boost_waitq)
 };
 
+/*
+ * Xiaomi 14 / Snapdragon 8 Gen 3 CPU policy leaders:
+ * policy0: CPUs 0-1 (LITTLE)
+ * policy2: CPUs 2-4 (MID)
+ * policy5: CPUs 5-6 (BIG)
+ * policy7: CPU 7 (PRIME)
+ *
+ * This driver has one shared PERF tuning tier for MID + BIG.
+ */
+enum input_boost_cluster {
+	INPUT_BOOST_CLUSTER_LITTLE,
+	INPUT_BOOST_CLUSTER_PERF,
+	INPUT_BOOST_CLUSTER_PRIME,
+};
+
+static enum input_boost_cluster get_input_boost_cluster(
+		struct cpufreq_policy *policy)
+{
+	if (policy->cpu <= 1)
+		return INPUT_BOOST_CLUSTER_LITTLE;
+	if (policy->cpu <= 6)
+		return INPUT_BOOST_CLUSTER_PERF;
+	return INPUT_BOOST_CLUSTER_PRIME;
+}
+
 static unsigned int get_input_boost_freq(struct cpufreq_policy *policy)
 {
 	unsigned int freq;
 
-	if (policy->cpu <= 1)
+	switch (get_input_boost_cluster(policy)) {
+	case INPUT_BOOST_CLUSTER_LITTLE:
 		freq = max(input_boost_freq_little, cpu_freq_min_little);
-	else if (policy->cpu <= 6)
+		break;
+	case INPUT_BOOST_CLUSTER_PERF:
 		freq = max(input_boost_freq_big, cpu_freq_min_big);
-	else
+		break;
+	case INPUT_BOOST_CLUSTER_PRIME:
 		freq = max(input_boost_freq_prime, cpu_freq_min_prime);
+		break;
+	}
+
+	freq = max(freq, policy->cpuinfo.min_freq);
 	return min(freq, policy->max);
 }
 
@@ -106,12 +138,19 @@ static unsigned int get_max_boost_freq(struct cpufreq_policy *policy)
 {
 	unsigned int freq;
 
-	if (policy->cpu <= 1)
+	switch (get_input_boost_cluster(policy)) {
+	case INPUT_BOOST_CLUSTER_LITTLE:
 		freq = max(max_boost_freq_little, cpu_freq_min_little);
-	else if (policy->cpu <= 6)
+		break;
+	case INPUT_BOOST_CLUSTER_PERF:
 		freq = max(max_boost_freq_big, cpu_freq_min_big);
-	else
+		break;
+	case INPUT_BOOST_CLUSTER_PRIME:
 		freq = max(max_boost_freq_prime, cpu_freq_min_prime);
+		break;
+	}
+
+	freq = max(freq, policy->cpuinfo.min_freq);
 	return min(freq, policy->max);
 }
 
@@ -119,12 +158,17 @@ static unsigned int get_min_freq_p(struct cpufreq_policy *policy)
 {
 	unsigned int freq;
 
-	if (policy->cpu <= 1)
+	switch (get_input_boost_cluster(policy)) {
+	case INPUT_BOOST_CLUSTER_LITTLE:
 		freq = cpu_freq_min_little;
-	else if (policy->cpu <= 6)
+		break;
+	case INPUT_BOOST_CLUSTER_PERF:
 		freq = cpu_freq_min_big;
-	else
+		break;
+	case INPUT_BOOST_CLUSTER_PRIME:
 		freq = cpu_freq_min_prime;
+		break;
+	}
 
 	return max(freq, policy->cpuinfo.min_freq);
 }
@@ -133,12 +177,17 @@ static unsigned int get_idle_freq(struct cpufreq_policy *policy)
 {
 	unsigned int freq;
 
-	if (policy->cpu <= 1)
+	switch (get_input_boost_cluster(policy)) {
+	case INPUT_BOOST_CLUSTER_LITTLE:
 		freq = cpu_freq_idle_little;
-	else if (policy->cpu <= 6)
+		break;
+	case INPUT_BOOST_CLUSTER_PERF:
 		freq = cpu_freq_idle_big;
-	else
+		break;
+	case INPUT_BOOST_CLUSTER_PRIME:
 		freq = cpu_freq_idle_prime;
+		break;
+	}
 
 	return max(freq, policy->cpuinfo.min_freq);
 }
@@ -173,18 +222,26 @@ static void boost_adjust_notify(struct cpufreq_policy *policy)
 
 static void update_online_cpu_policy(void)
 {
-	static const unsigned int cluster_cpus[] = { 0, 2, 5, 7 };
+	unsigned int cpu;
 	struct cpufreq_policy *policy;
-	unsigned int i, cpu;
+	int leader;
 
 	cpus_read_lock();
-	for (i = 0; i < ARRAY_SIZE(cluster_cpus); i++) {
-		cpu = cluster_cpus[i];
-		if (!cpu_online(cpu))
+	for_each_online_cpu(cpu) {
+		policy = cpufreq_cpu_get(cpu);
+		if (!policy)
 			continue;
 
-		cpufreq_update_policy(cpu);
-		policy = cpufreq_cpu_get(cpu);
+		leader = policy->cpu;
+		cpufreq_cpu_put(policy);
+
+		/* Each shared policy only needs one update. */
+		if (leader != cpu)
+			continue;
+
+		cpufreq_update_policy(leader);
+
+		policy = cpufreq_cpu_get(leader);
 		if (!policy)
 			continue;
 
@@ -430,4 +487,3 @@ unregister_handler:
 	return ret;
 }
 late_initcall(cpu_input_boost_init);
-
